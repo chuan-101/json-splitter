@@ -15,7 +15,7 @@ export default function JsonConvoSplitter() {
   // ---------- helpers ----------
   const safe = (s) => (s || "Untitled").replace(/[^0-9A-Za-z_\-\u4e00-\u9fa5]+/g, "_").slice(0, 80);
 
-  // Build a linear message chain from a mapping tree
+  // Build a linear message chain from a mapping tree — KEEP ONLY user/assistant
   const buildChain = (conv) => {
     const chain = [];
     let nid = conv?.current_node;
@@ -25,31 +25,34 @@ export default function JsonConvoSplitter() {
       guard.add(nid);
       const node = mapping[nid];
       if (!node) break;
-      if (node.message) chain.push(node.message);
+      const msg = node.message;
+      if (msg) {
+        const role = msg.author?.role;
+        if (role === "user" || role === "assistant") chain.push(msg);
+      }
       nid = node.parent;
     }
     return chain.reverse();
   };
 
-  // Robust text extraction for various export shapes
+  // Robust text extraction, ignore system/tool/metadata noise
   const extractText = (message) => {
     if (!message?.content) return "";
     const c = message.content;
-    // OpenAI legacy shape: { content: { parts: ["..."] } }
+    // Legacy shape: { content: { parts: ["..."] } }
     if (Array.isArray(c.parts)) return c.parts.map(p => typeof p === 'string' ? p : String(p ?? "")).join("\n\n");
     // Newer shape: { content: [ { type: 'text', text: {...} } ] }
     if (Array.isArray(c)) {
       return c.map(part => {
         if (typeof part === 'string') return part;
         if (part?.type === 'text') return typeof part.text === 'string' ? part.text : part.text?.value || '';
-        if (part?.type === 'image_file' || part?.type === 'input_image' || part?.type === 'image') return '[图片]';
+        // non-text parts (images/tools) are hidden in preview/export
         return '';
       }).filter(Boolean).join("\n\n");
     }
-    // Sometimes text is nested
     if (typeof c.text === 'string') return c.text;
     if (typeof c === 'string') return c;
-    try { return JSON.stringify(c); } catch { return String(c); }
+    return ""; // skip other structures to avoid dumping system/tool JSON
   };
 
   // Markdown serialization
@@ -59,9 +62,11 @@ export default function JsonConvoSplitter() {
       .map((m) => {
         const role = m.author?.role || "assistant";
         const text = extractText(m);
+        if (!text.trim()) return "";
         const displayRole = role === "assistant" ? "Syzygy" : "串串";
         return `**${displayRole}**:\n${text}`;
       })
+      .filter(Boolean)
       .join("\n\n\n");
   };
 
@@ -244,6 +249,7 @@ export default function JsonConvoSplitter() {
       if (e.key.toLowerCase() === 'i') invertVisible();
       if (e.key.toLowerCase() === 'd') downloadSelected();
       if (e.key.toLowerCase() === 'z') downloadZip();
+      if (e.key.toLowerCase() === 'm') downloadMerged();
       if (e.key.toLowerCase() === 'c') copyPreview();
     };
     window.addEventListener('keydown', onKey);
@@ -251,7 +257,7 @@ export default function JsonConvoSplitter() {
   }, [visible, selected, previewIdx, convos]);
 
   const previewConv = previewIdx != null ? convos[previewIdx] : null;
-  const previewMsgs = previewConv ? buildChain(previewConv) : [];
+  const previewMsgs = previewConv ? buildChain(previewConv).filter(m => (extractText(m) || '').trim().length > 0) : [];
 
   return (
     <div className={`outer ${themeClass(theme)}`}>
@@ -289,7 +295,7 @@ export default function JsonConvoSplitter() {
                 <button onClick={invertVisible} title="I">反选</button>
                 <button className="primary" disabled={!selected.size} onClick={downloadSelected} title="D">吱吱收下</button>
                 <button className="primary" disabled={!selected.size} onClick={downloadZip} title="Z">打包ZIP</button>
-                <button disabled={!selected.size} onClick={downloadMerged}>合并导出MD</button>
+                <button disabled={!selected.size} onClick={downloadMerged} title="M">合并导出MD</button>
                 <button disabled={previewIdx==null} onClick={copyPreview} title="C">复制预览</button>
               </div>
             </div>
